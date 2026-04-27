@@ -131,11 +131,23 @@ async function openGroupChat(groupId) {
 
     const groupDoc = await db.collection('groups').doc(groupId).get();
     if (groupDoc.exists) {
-        const group          = groupDoc.data();
-        const groupChatName  = document.getElementById('groupChatName');
-        const membersCount   = document.querySelector('.members-count');
+        const group              = groupDoc.data();
+        const groupChatName      = document.getElementById('groupChatName');
+        const membersCount       = document.querySelector('.members-count');
+        const groupPartnerAvatar = document.getElementById('groupPartnerAvatar');
+
         if (groupChatName) groupChatName.textContent = group.name;
         if (membersCount)  membersCount.textContent  = `${group.members.length} members`;
+
+        if (groupPartnerAvatar) {
+            const photoURL = group.photoURL || '';
+            const initials = (group.name?.charAt(0)?.toUpperCase()) || '👥';
+            if (photoURL) {
+                groupPartnerAvatar.innerHTML = `<img class="avatar-img" src="${escapeAttribute(photoURL)}" alt="${escapeAttribute(initials)}" onerror="this.style.display='none';this.nextElementSibling.style.display='flex';"><span class="avatar-fallback" style="display:none;">${escapeHTML(initials)}</span>`;
+            } else {
+                groupPartnerAvatar.innerHTML = `<span class="avatar-fallback">${escapeHTML(initials)}</span>`;
+            }
+        }
     }
 
     loadGroupMessages();
