@@ -1,0 +1,30 @@
+{
+  "name": "EduChat — Connect & Learn",
+  "short_name": "EduChat",
+  "description": "Chat with classmates, share files, and collaborate — all in one place.",
+  "start_url": "/chat.html",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait-primary",
+  "theme_color": "#6366f1",
+  "background_color": "#0f1420",
+  "lang": "en",
+  "categories": ["education", "social", "productivity"],
+  "icons": [
+    {
+      "src": "icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ],
+  "shortcuts": [
+    {
+      "name": "Open Chats",
+      "short_name": "Chats",
+      "description": "Go to your recent chats",
+      "url": "/chat.html",
+      "icons": [{ "src": "icon-192.png", "sizes": "192x192" }]
+    }
+  ]
+}
