@@ -112,10 +112,16 @@ async function loadFriendsList() {
         for (const { friendUID, friendData, chatId, lastPreview, lastTimeStr } of sorted) {
             const unreadCount  = unreadMap[chatId] || 0;
             const dotColor     = statusDotColor(friendData.status);
+            const photoURL     = friendData.photoURL || '';
+            const initials     = escapeHTML(friendData.name?.charAt(0)?.toUpperCase() || 'U');
             html += `
                 <button class="chat-item" data-uid="${escapeAttribute(friendUID)}">
                     <div class="chat-avatar">
-                        ${escapeHTML(friendData.name?.charAt(0)?.toUpperCase() || 'U')}
+                        ${photoURL
+                            ? `<img class="avatar-img" src="${escapeAttribute(photoURL)}" alt="${initials}" onerror="this.style.display='none';this.nextElementSibling.style.display='flex';">
+                               <span class="avatar-fallback" style="display:none;">${initials}</span>`
+                            : `<span class="avatar-fallback">${initials}</span>`
+                        }
                         <span class="status-dot" style="background:${dotColor};"></span>
                     </div>
                     <div class="chat-info">
@@ -261,9 +267,17 @@ async function loadFriendRequests() {
             const request  = doc.data();
             const fromUser = await getUserData(request.from);
             if (fromUser) {
+                const reqPhoto    = fromUser.photoURL || '';
+                const reqInitials = escapeHTML(fromUser.name?.charAt(0)?.toUpperCase() || 'U');
                 html += `
                     <div class="request-item">
-                        <div class="friend-avatar">${escapeHTML(fromUser.name?.charAt(0)?.toUpperCase() || 'U')}</div>
+                        <div class="friend-avatar">
+                            ${reqPhoto
+                                ? `<img class="avatar-img" src="${escapeAttribute(reqPhoto)}" alt="${reqInitials}" onerror="this.style.display='none';this.nextElementSibling.style.display='flex';">
+                                   <span class="avatar-fallback" style="display:none;">${reqInitials}</span>`
+                                : `<span class="avatar-fallback">${reqInitials}</span>`
+                            }
+                        </div>
                         <div class="friend-info">
                             <h4>${escapeHTML(fromUser.name)}</h4>
                             <p>@${escapeHTML(fromUser.username)}</p>
@@ -331,10 +345,16 @@ async function loadAllFriends() {
             const friendData = await getUserData(friendUID);
             if (friendData) {
                 const dotColor = statusDotColor(friendData.status);
+                const photoURL = friendData.photoURL || '';
+                const initials = escapeHTML(friendData.name?.charAt(0)?.toUpperCase() || 'U');
                 html += `
                     <div class="friend-item">
                         <div class="friend-avatar">
-                            ${escapeHTML(friendData.name?.charAt(0)?.toUpperCase() || 'U')}
+                            ${photoURL
+                                ? `<img class="avatar-img" src="${escapeAttribute(photoURL)}" alt="${initials}" onerror="this.style.display='none';this.nextElementSibling.style.display='flex';">
+                                   <span class="avatar-fallback" style="display:none;">${initials}</span>`
+                                : `<span class="avatar-fallback">${initials}</span>`
+                            }
                             <span class="status-dot" style="background:${dotColor};"></span>
                         </div>
                         <div class="friend-info">
