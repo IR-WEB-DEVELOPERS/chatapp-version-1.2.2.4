@@ -370,6 +370,28 @@ body {
     position: relative;
 }
 
+/* Avatar image inside circle */
+.chat-avatar .avatar-img,
+.friend-avatar .avatar-img {
+    width: 100%;
+    height: 100%;
+    border-radius: 50%;
+    object-fit: cover;
+    display: block;
+}
+
+.chat-avatar .avatar-fallback,
+.friend-avatar .avatar-fallback {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 100%;
+    height: 100%;
+    font-size: 1rem;
+    font-weight: 700;
+    color: white;
+}
+
 /* Status dot — green online, orange away, grey offline */
 .status-dot {
     position: absolute;
