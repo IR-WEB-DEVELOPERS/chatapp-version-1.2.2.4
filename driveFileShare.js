@@ -48,65 +48,13 @@ function clearDriveCachedToken() {
     } catch (e) { /* ignore */ }
 }
 
-// ── Init Google Identity Services ──────────────────────────
-function initDriveAuth() {
-    if (!window.google?.accounts?.oauth2) {
-        console.warn('Google Identity Services not loaded yet');
-        return;
-    }
-    driveTokenClient = google.accounts.oauth2.initTokenClient({
-        client_id: DRIVE_CLIENT_ID,
-        scope: DRIVE_SCOPE,
-        // No redirect — stays on same page
-        callback: (tokenResponse) => {
-            if (tokenResponse.error) {
-                console.error('Drive auth error:', tokenResponse.error);
-                showToast('Drive access denied', 'error');
-                return;
-            }
-            // FIX: cache token so permission popup doesn't show every time
-            setDriveCachedToken(tokenResponse.access_token);
-            // If a file was waiting for auth, upload it now
-            if (pendingUploadFile) {
-                const file = pendingUploadFile;
-                const ctx  = pendingUploadCtx;
-                pendingUploadFile = null;
-                pendingUploadCtx  = null;
-                uploadFileToDrive(file, ctx);
-            }
-        },
-        error_callback: (err) => {
-            console.error('Drive token error:', err);
-            // popup_closed = user closed popup, not a real error
-            if (err.type !== 'popup_closed') {
-                showToast('Drive auth failed: ' + err.type, 'error');
-            }
-            pendingUploadFile = null;
-            pendingUploadCtx  = null;
-        }
-    });
-}
-
-// ── Request Drive token ─────────────────────────────────────
+// ── Request Drive token (upload-retry path only — token expired mid-upload) ──
+// NOTE: Do NOT call requestAccessToken() here — we are not in a direct user
+// gesture, so the browser will block the popup. Instead, clear the bad token
+// and ask the user to retry, which will go through the attach button click path.
 function requestDriveToken(file, ctx) {
-    if (!driveTokenClient) {
-        initDriveAuth();
-    }
-    pendingUploadFile = file;
-    pendingUploadCtx  = ctx;
-
-    const cached = getDriveCachedToken();
-    if (cached) {
-        // Token already cached — upload straight away
-        const f = pendingUploadFile;
-        const c = pendingUploadCtx;
-        pendingUploadFile = null;
-        pendingUploadCtx  = null;
-        uploadFileToDrive(f, c);
-    } else {
-        // '' = no extra prompt if already consented, shows popup only if needed
-        driveTokenClient.requestAccessToken({ prompt: '' });
-    }
+    clearDriveCachedToken();
+    showToast('Drive session expired — please tap 📎 to re-attach the file', 'error');
 }
 
 // ── Get or create EduChat folder in Drive ──────────────────
@@ -330,17 +278,27 @@ function showToast(msg, type = 'info') {
 
 // ── Wire up file input triggers ─────────────────────────────
 //
-//  KEY INSIGHT: User already granted Drive permission once.
-//  Google's token client with prompt:'' still opens a popup (causes COOP errors).
-//  
-//  CORRECT FLOW:
-//  1. User clicks attach → open file picker IMMEDIATELY (user gesture preserved)
-//  2. User picks file → requestAccessToken({ prompt:'' }) called in background
-//     (no popup needed since consent already given — Google returns token silently)
-//  3. Token received → upload file
+//  THE POPUP PROBLEM:
+//  Browsers only allow popups (OAuth windows) from a *direct* user gesture
+//  (a synchronous click handler). By the time the file-input `change` event
+//  fires, the browser no longer considers it a trusted gesture, so
+//  requestAccessToken() → popup_failed_to_open.
 //
-//  This avoids both the COOP error AND the "file chooser needs user activation" error.
+//  CORRECT FLOW:
+//  1. User clicks attach button (direct gesture ✅)
+//  2a. Token already cached  → open file picker immediately
+//  2b. No token              → call requestAccessToken() RIGHT NOW (still inside
+//      the click handler, gesture is still trusted) → OAuth popup opens fine
+//  3. Token callback fires   → set pendingPickerChatType, open file picker
+//  4. User picks file        → upload with cached token
+//
 // ─────────────────────────────────────────────────────────────
+let pendingPickerChatType = null; // set when we need to open picker after auth
+
+function openFilePicker(chatType) {
+    document.getElementById(`fileInput-${chatType}`)?.click();
+}
+
 function setupAttachButtons() {
     ['direct', 'group'].forEach(chatType => {
         const input = document.createElement('input');
@@ -357,33 +315,81 @@ function setupAttachButtons() {
                 showToast('File too large (max 25 MB)', 'error');
                 return;
             }
-
-            // File selected — now get token.
-            // Cached token: upload immediately.
-            // No cache: call requestAccessToken(prompt:'') — since user already
-            // granted consent, Google returns token via callback with NO popup.
-            const cached = getDriveCachedToken();
-            if (cached) {
-                uploadFileToDrive(file, { type: chatType });
-            } else {
-                // Store file as pending, then silently request token
-                pendingUploadFile = file;
-                pendingUploadCtx  = { type: chatType };
-                if (!driveTokenClient) initDriveAuth();
-                // prompt:'' = use existing consent, no popup/COOP issues
-                driveTokenClient.requestAccessToken({ prompt: '' });
-            }
+            // Token is guaranteed to be cached here (we ensured it before
+            // opening the picker), so upload straight away — no popup needed.
+            uploadFileToDrive(file, { type: chatType });
         });
 
         document.body.appendChild(input);
     });
 
-    // Attach button → open file picker straight away (preserves user gesture)
+    // Attach button click — this is the ONLY place we call requestAccessToken,
+    // because this is the only guaranteed direct user gesture.
     document.querySelectorAll('.attach-btn').forEach(btn => {
         btn.addEventListener('click', () => {
             const chatType = btn.dataset.chat;
-            document.getElementById(`fileInput-${chatType}`)?.click();
+            if (!driveTokenClient) initDriveAuth();
+
+            if (getDriveCachedToken()) {
+                // Already have a valid token — open picker immediately
+                openFilePicker(chatType);
+            } else {
+                // No token yet — request it NOW while we're still in the click handler.
+                // The browser treats this as a trusted popup because we're synchronous
+                // inside the click event. The token callback will open the picker.
+                pendingPickerChatType = chatType;
+                driveTokenClient.requestAccessToken({ prompt: '' });
+            }
         });
+    });
+}
+
+// ── Init Google Identity Services ──────────────────────────
+function initDriveAuth() {
+    if (!window.google?.accounts?.oauth2) {
+        console.warn('Google Identity Services not loaded yet');
+        return;
+    }
+    driveTokenClient = google.accounts.oauth2.initTokenClient({
+        client_id: DRIVE_CLIENT_ID,
+        scope: DRIVE_SCOPE,
+        callback: (tokenResponse) => {
+            if (tokenResponse.error) {
+                console.error('Drive auth error:', tokenResponse.error);
+                showToast('Drive access denied', 'error');
+                pendingPickerChatType = null;
+                pendingUploadFile = null;
+                pendingUploadCtx  = null;
+                return;
+            }
+            setDriveCachedToken(tokenResponse.access_token);
+
+            // If auth was triggered by the attach button, open the file picker now
+            if (pendingPickerChatType) {
+                const chatType = pendingPickerChatType;
+                pendingPickerChatType = null;
+                openFilePicker(chatType);
+                return;
+            }
+
+            // Fallback: a file was already pending (e.g. token expired mid-upload)
+            if (pendingUploadFile) {
+                const file = pendingUploadFile;
+                const ctx  = pendingUploadCtx;
+                pendingUploadFile = null;
+                pendingUploadCtx  = null;
+                uploadFileToDrive(file, ctx);
+            }
+        },
+        error_callback: (err) => {
+            console.error('Drive token error:', err);
+            pendingPickerChatType = null;
+            pendingUploadFile = null;
+            pendingUploadCtx  = null;
+            if (err.type !== 'popup_closed') {
+                showToast('Drive auth failed: ' + err.type, 'error');
+            }
+        }
     });
 }
 // ── Expose globally ─────────────────────────────────────────
