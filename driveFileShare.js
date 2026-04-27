@@ -86,55 +86,87 @@ async function getOrCreateEduChatFolder() {
     return folder.id;
 }
 
+// ── Fetch with timeout helper ───────────────────────────────
+async function fetchWithTimeout(url, options, timeoutMs = 30000) {
+    const controller = new AbortController();
+    const id = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+        const res = await fetch(url, { ...options, signal: controller.signal });
+        return res;
+    } finally {
+        clearTimeout(id);
+    }
+}
+
 // ── Upload file to Drive, return { url, name, size, mimeType } ─
 async function uploadFileToDrive(file, ctx) {
     // Show uploading indicator
     setAttachBtnLoading(true, ctx.type);
 
-    try {
-        const folderId = await getOrCreateEduChatFolder();
+    // Show progress toast
+    showToast(`⏳ Uploading ${file.name}…`, 'info');
 
-        // Multipart upload
-        const metadata = {
-            name: file.name,
-            parents: [folderId],
-        };
+    const MAX_RETRIES = 2;
+    let lastError;
 
-        const form = new FormData();
-        form.append('metadata', new Blob([JSON.stringify(metadata)], { type: 'application/json' }));
-        form.append('file', file);
+    for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+        try {
+            if (attempt > 0) showToast(`🔄 Retrying upload (${attempt}/${MAX_RETRIES})…`, 'info');
 
-        const uploadRes = await fetch(
-            'https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,name,size,mimeType,webViewLink,webContentLink',
-            {
-                method: 'POST',
-                headers: { Authorization: `Bearer ${driveAccessToken}` },
-                body: form,
+            const folderId = await getOrCreateEduChatFolder();
+
+            // Multipart upload
+            const metadata = {
+                name: file.name,
+                parents: [folderId],
+            };
+
+            const form = new FormData();
+            form.append('metadata', new Blob([JSON.stringify(metadata)], { type: 'application/json' }));
+            form.append('file', file);
+
+            // Use resumable upload for files > 5MB to avoid timeouts
+            const useResumable = file.size > 5 * 1024 * 1024;
+            const uploadUrl = useResumable
+                ? 'https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,name,size,mimeType,webViewLink,webContentLink'
+                : 'https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,name,size,mimeType,webViewLink,webContentLink';
+
+            const uploadRes = await fetchWithTimeout(
+                uploadUrl,
+                {
+                    method: 'POST',
+                    headers: { Authorization: `Bearer ${driveAccessToken}` },
+                    body: form,
+                },
+                60000  // 60s timeout for uploads
+            );
+
+            if (!uploadRes.ok) {
+                const err = await uploadRes.json();
+                // Token might be expired
+                if (err.error?.code === 401) {
+                    clearDriveCachedToken();
+                    requestDriveToken(file, ctx);
+                    return;
+                }
+                throw new Error(err.error?.message || 'Upload failed');
             }
-        );
 
-        if (!uploadRes.ok) {
-            const err = await uploadRes.json();
-            // Token might be expired
-            if (err.error?.code === 401) {
-                clearDriveCachedToken();
-                requestDriveToken(file, ctx);
-                return;
-            }
-            throw new Error(err.error?.message || 'Upload failed');
-        }
+            const fileData = await uploadRes.json();
 
-        const fileData = await uploadRes.json();
-
-        // Make file publicly readable (anyone with link can view/download)
-        await fetch(`https://www.googleapis.com/drive/v3/files/${fileData.id}/permissions`, {
-            method: 'POST',
-            headers: {
-                Authorization: `Bearer ${driveAccessToken}`,
-                'Content-Type': 'application/json',
-            },
-            body: JSON.stringify({ role: 'reader', type: 'anyone' }),
-        });
+            // Make file publicly readable (anyone with link can view/download)
+            await fetchWithTimeout(
+                `https://www.googleapis.com/drive/v3/files/${fileData.id}/permissions`,
+                {
+                    method: 'POST',
+                    headers: {
+                        Authorization: `Bearer ${driveAccessToken}`,
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({ role: 'reader', type: 'anyone' }),
+                },
+                15000  // 15s timeout for permissions
+            );
 
         // Send as file message
         const fileMsg = {
@@ -154,14 +186,28 @@ async function uploadFileToDrive(file, ctx) {
             await sendGroupFileMessage(fileMsg);
         }
 
-        showToast(`✅ ${file.name} sent!`, 'success');
+            showToast(`✅ ${file.name} sent!`, 'success');
+            setAttachBtnLoading(false, ctx.type);
+            return; // success — exit retry loop
 
-    } catch (err) {
-        console.error('Drive upload error:', err);
-        showToast('File upload failed: ' + err.message, 'error');
-    } finally {
-        setAttachBtnLoading(false, ctx.type);
+        } catch (err) {
+            lastError = err;
+            console.warn(`Drive upload attempt ${attempt + 1} failed:`, err.message);
+            if (attempt < MAX_RETRIES) {
+                await new Promise(r => setTimeout(r, 1500 * (attempt + 1))); // backoff
+            }
+        }
     }
+
+    // All retries exhausted
+    console.error('Drive upload error (all retries failed):', lastError);
+    showToast(
+        lastError?.name === 'AbortError'
+            ? '⏱️ Upload timed out — check connection and retry'
+            : 'File upload failed: ' + lastError?.message,
+        'error'
+    );
+    setAttachBtnLoading(false, ctx.type);
 }
 
 // ── Send file message to Firestore (direct chat) ───────────
