@@ -369,7 +369,7 @@ const storiesManager = (() => {
 
                 <div class="story-type-tabs">
                     <button class="story-type-tab active" data-type="text">✍️ Text</button>
-                    <button class="story-type-tab" data-type="image">🖼️ Image URL</button>
+                    <button class="story-type-tab" data-type="media">🖼️ Image / Video</button>
                 </div>
 
                 <!-- Text panel -->
@@ -379,11 +379,15 @@ const storiesManager = (() => {
                         maxlength="280"></textarea>
                 </div>
 
-                <!-- Image panel -->
-                <div id="storyImagePanel" style="display:none;">
-                    <input type="url" class="story-img-url-input" id="storyImgUrlInput"
-                        placeholder="Paste image URL...">
-                    <img class="story-image-preview" id="storyImgPreview" src="" alt="Preview">
+                <!-- Media panel -->
+                <div id="storyMediaPanel" style="display:none;">
+                    <label class="story-file-label" id="storyFileLabel">
+                        <span id="storyFileLabelText">📁 Choose Image or Video</span>
+                        <input type="file" id="storyFileInput" accept="image/*,video/*" style="display:none;">
+                    </label>
+                    <div id="storyUploadStatus" class="story-upload-status" style="display:none;"></div>
+                    <img class="story-image-preview" id="storyImgPreview" src="" alt="Preview" style="display:none;">
+                    <video class="story-video-preview" id="storyVideoPreview" controls style="display:none; max-width:100%; border-radius:8px; margin-top:8px;"></video>
                 </div>
 
                 <div class="story-composer-actions">
@@ -394,6 +398,11 @@ const storiesManager = (() => {
         `;
         document.body.appendChild(overlay);
 
+        // Internal state
+        let _uploadedMediaURL = null;  // Google Drive webViewLink
+        let _uploadedMediaType = null; // 'image' or 'video'
+        let _uploadedFileName = null;
+
         // Type tabs
         overlay.querySelectorAll('.story-type-tab').forEach(tab => {
             tab.onclick = () => {
@@ -401,19 +410,61 @@ const storiesManager = (() => {
                 tab.classList.add('active');
                 const type = tab.dataset.type;
                 document.getElementById('storyTextPanel').style.display  = type === 'text'  ? 'block' : 'none';
-                document.getElementById('storyImagePanel').style.display = type === 'image' ? 'block' : 'none';
+                document.getElementById('storyMediaPanel').style.display = type === 'media' ? 'block' : 'none';
             };
         });
 
-        // Image URL live preview
-        document.getElementById('storyImgUrlInput').oninput = (e) => {
-            const url = e.target.value.trim();
-            const prev = document.getElementById('storyImgPreview');
-            if (url) {
-                prev.src = url;
-                prev.classList.add('visible');
+        // File picker → local preview + auto Drive upload
+        document.getElementById('storyFileInput').onchange = async (e) => {
+            const file = e.target.files[0];
+            if (!file) return;
+
+            const isImage = file.type.startsWith('image/');
+            const isVideo = file.type.startsWith('video/');
+            if (!isImage && !isVideo) {
+                showToast('Please choose an image or video file', 'warning');
+                return;
+            }
+
+            // Local preview
+            const localURL = URL.createObjectURL(file);
+            if (isImage) {
+                const prev = document.getElementById('storyImgPreview');
+                prev.src = localURL;
+                prev.style.display = 'block';
+                document.getElementById('storyVideoPreview').style.display = 'none';
             } else {
-                prev.classList.remove('visible');
+                const vprev = document.getElementById('storyVideoPreview');
+                vprev.src = localURL;
+                vprev.style.display = 'block';
+                document.getElementById('storyImgPreview').style.display = 'none';
+            }
+
+            // Update label
+            document.getElementById('storyFileLabelText').textContent = `📎 ${file.name}`;
+
+            // Auto upload to Google Drive
+            const statusEl = document.getElementById('storyUploadStatus');
+            statusEl.style.display = 'block';
+            statusEl.innerHTML = `<span class="upload-spinner">⏳</span> Uploading to Drive…`;
+
+            const postBtn = document.getElementById('storyPostBtn');
+            postBtn.disabled = true;
+            _uploadedMediaURL = null;
+
+            try {
+                const driveResult = await _uploadStatusFileToDrive(file);
+                _uploadedMediaURL  = driveResult.viewLink;
+                _uploadedMediaType = isImage ? 'image' : 'video';
+                _uploadedFileName  = file.name;
+                statusEl.innerHTML = `✅ Uploaded! Ready to post.`;
+                statusEl.style.color = '#22c55e';
+                postBtn.disabled = false;
+            } catch (err) {
+                console.error('Status Drive upload error:', err);
+                statusEl.innerHTML = `❌ Upload failed: ${err.message}`;
+                statusEl.style.color = '#ef4444';
+                postBtn.disabled = false;
             }
         };
 
@@ -431,9 +482,15 @@ const storiesManager = (() => {
                 if (!text) { showToast('Please enter some text', 'warning'); return; }
                 storyData = { type: 'text', text };
             } else {
-                const url = document.getElementById('storyImgUrlInput').value.trim();
-                if (!url) { showToast('Please enter an image URL', 'warning'); return; }
-                storyData = { type: 'image', imageURL: url };
+                if (!_uploadedMediaURL) {
+                    showToast('Please choose and wait for file to upload', 'warning');
+                    return;
+                }
+                storyData = {
+                    type: _uploadedMediaType,   // 'image' or 'video'
+                    imageURL: _uploadedMediaURL, // used for both image & video (viewer checks type)
+                    fileName: _uploadedFileName,
+                };
             }
 
             const btn = document.getElementById('storyPostBtn');
@@ -458,6 +515,112 @@ const storiesManager = (() => {
                 btn.textContent = 'Post Status';
             }
         };
+    }
+
+    // ── Upload status media to Google Drive (returns {viewLink}) ─
+    async function _uploadStatusFileToDrive(file) {
+        // Reuse driveFileShare.js token infrastructure
+        const token = await _getStatusDriveToken();
+
+        // Get/create EduChat Status folder
+        const folderId = await _getOrCreateStatusFolder(token);
+
+        const metadata = { name: file.name, parents: [folderId] };
+        const form = new FormData();
+        form.append('metadata', new Blob([JSON.stringify(metadata)], { type: 'application/json' }));
+        form.append('file', file);
+
+        const uploadRes = await fetch(
+            'https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,name,mimeType,webViewLink,webContentLink',
+            {
+                method: 'POST',
+                headers: { Authorization: `Bearer ${token}` },
+                body: form,
+            }
+        );
+
+        if (!uploadRes.ok) {
+            const err = await uploadRes.json();
+            throw new Error(err.error?.message || 'Drive upload failed');
+        }
+
+        const fileData = await uploadRes.json();
+
+        // Make publicly readable
+        await fetch(`https://www.googleapis.com/drive/v3/files/${fileData.id}/permissions`, {
+            method: 'POST',
+            headers: {
+                Authorization: `Bearer ${token}`,
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({ role: 'reader', type: 'anyone' }),
+        });
+
+        // Return direct-view link for images, webViewLink for video
+        const isImage = fileData.mimeType.startsWith('image/');
+        const viewLink = isImage
+            ? `https://drive.google.com/uc?export=view&id=${fileData.id}`
+            : fileData.webViewLink;
+
+        return { viewLink, fileId: fileData.id };
+    }
+
+    // ── Get Drive access token (reuses driveFileShare token cache) ─
+    function _getStatusDriveToken() {
+        return new Promise((resolve, reject) => {
+            // Try cached token from driveFileShare.js session cache
+            const cached = sessionStorage.getItem('driveShareAccessToken');
+            const expiry = parseInt(sessionStorage.getItem('driveShareAccessTokenExpiry') || '0', 10);
+            if (cached && Date.now() < expiry) {
+                resolve(cached);
+                return;
+            }
+
+            // Request new token via Google Identity Services
+            if (!window.google?.accounts?.oauth2) {
+                reject(new Error('Google Identity Services not loaded'));
+                return;
+            }
+
+            const client = google.accounts.oauth2.initTokenClient({
+                client_id: window.DRIVE_CLIENT_ID || '191214500535-6nironkv53bia01cct6lbfgmi6u0286s.apps.googleusercontent.com',
+                scope: 'https://www.googleapis.com/auth/drive.file',
+                callback: (tokenResponse) => {
+                    if (tokenResponse.error) {
+                        reject(new Error(tokenResponse.error));
+                        return;
+                    }
+                    // Cache it for reuse
+                    sessionStorage.setItem('driveShareAccessToken', tokenResponse.access_token);
+                    sessionStorage.setItem('driveShareAccessTokenExpiry', String(Date.now() + 55 * 60 * 1000));
+                    resolve(tokenResponse.access_token);
+                },
+                error_callback: (err) => {
+                    if (err.type === 'popup_closed') reject(new Error('Google sign-in was closed'));
+                    else reject(new Error('Drive auth failed: ' + err.type));
+                }
+            });
+            client.requestAccessToken({ prompt: '' });
+        });
+    }
+
+    // ── Get or create "EduChat Status" folder in Drive ──────────
+    async function _getOrCreateStatusFolder(token) {
+        const folderName = 'EduChat Status';
+        const searchRes = await fetch(
+            `https://www.googleapis.com/drive/v3/files?q=name='${folderName}' and mimeType='application/vnd.google-apps.folder' and trashed=false&fields=files(id)`,
+            { headers: { Authorization: `Bearer ${token}` } }
+        );
+        const searchData = await searchRes.json();
+        if (searchData.files?.length > 0) return searchData.files[0].id;
+
+        const createRes = await fetch('https://www.googleapis.com/drive/v3/files', {
+            method: 'POST',
+            headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name: folderName, mimeType: 'application/vnd.google-apps.folder' }),
+        });
+        const folder = await createRes.json();
+        return folder.id;
     }
 
     // ── Story Viewer ──────────────────────────────────────────
@@ -511,7 +674,9 @@ const storiesManager = (() => {
                     <div class="story-content" id="storyContent">
                         ${story.type === 'image'
                             ? `<img class="story-content-image" src="${escapeAttribute(story.imageURL)}" alt="Status">`
-                            : `<div class="story-content-text">${escapeHTML(story.text)}</div>`}
+                            : story.type === 'video'
+                                ? `<video class="story-content-video" src="${escapeAttribute(story.imageURL)}" autoplay controls playsinline style="max-width:100%;max-height:70vh;border-radius:8px;"></video>`
+                                : `<div class="story-content-text">${escapeHTML(story.text)}</div>`}
                     </div>
 
                     <!-- Nav zones -->
