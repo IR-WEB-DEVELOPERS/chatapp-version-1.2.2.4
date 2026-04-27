@@ -178,6 +178,17 @@ async function openChat(friendUID) {
     const friendData       = await getUserData(friendUID);
     const chatPartnerName  = document.getElementById('chatPartnerName');
     const chatPartnerStatus = document.getElementById('chatPartnerStatus');
+    const chatPartnerAvatar = document.getElementById('chatPartnerAvatar');
+
+    if (chatPartnerAvatar) {
+        const photoURL = friendData.photoURL || '';
+        const initials = (friendData.name?.charAt(0)?.toUpperCase()) || '👤';
+        if (photoURL) {
+            chatPartnerAvatar.innerHTML = `<img class="avatar-img" src="${escapeAttribute(photoURL)}" alt="${escapeAttribute(initials)}" onerror="this.style.display='none';this.nextElementSibling.style.display='flex';"><span class="avatar-fallback" style="display:none;">${escapeHTML(initials)}</span>`;
+        } else {
+            chatPartnerAvatar.innerHTML = `<span class="avatar-fallback">${escapeHTML(initials)}</span>`;
+        }
+    }
 
     if (chatPartnerName) chatPartnerName.textContent = friendData.name;
     if (chatPartnerStatus) {
