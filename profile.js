@@ -414,6 +414,38 @@ const storiesManager = (() => {
             };
         });
 
+        // Pre-fetch Drive token on label click — this IS a direct user gesture,
+        // so the OAuth popup is allowed here. By the time file is chosen and
+        // onchange fires, the token will already be cached.
+        const storyFileLabel = overlay.querySelector('label[for="storyFileInput"], label:has(#storyFileInput)') ||
+                               document.querySelector('label:has(#storyFileInput)');
+        const storyFileLabelClickHandler = () => {
+            // Try to warm up the token while we're still in a trusted gesture
+            const cached = sessionStorage.getItem('driveShareAccessToken');
+            const expiry = parseInt(sessionStorage.getItem('driveShareAccessTokenExpiry') || '0', 10);
+            if (!cached || Date.now() >= expiry) {
+                if (window.google?.accounts?.oauth2 && window.DRIVE_CLIENT_ID) {
+                    const warmupClient = google.accounts.oauth2.initTokenClient({
+                        client_id: window.DRIVE_CLIENT_ID,
+                        scope: 'https://www.googleapis.com/auth/drive.file',
+                        callback: (tokenResponse) => {
+                            if (!tokenResponse.error) {
+                                sessionStorage.setItem('driveShareAccessToken', tokenResponse.access_token);
+                                sessionStorage.setItem('driveShareAccessTokenExpiry', String(Date.now() + 55 * 60 * 1000));
+                            }
+                        },
+                        error_callback: () => {} // silent — file picker still opens
+                    });
+                    warmupClient.requestAccessToken({ prompt: '' });
+                }
+            }
+        };
+        // Attach to the label element wrapping storyFileInput
+        const storyInputEl = document.getElementById('storyFileInput');
+        if (storyInputEl?.parentElement?.tagName === 'LABEL') {
+            storyInputEl.parentElement.addEventListener('click', storyFileLabelClickHandler);
+        }
+
         // File picker → local preview + auto Drive upload
         document.getElementById('storyFileInput').onchange = async (e) => {
             const file = e.target.files[0];
@@ -556,11 +588,10 @@ const storiesManager = (() => {
             body: JSON.stringify({ role: 'reader', type: 'anyone' }),
         });
 
-        // Return direct-view link for images, webViewLink for video
-        const isImage = fileData.mimeType.startsWith('image/');
-        const viewLink = isImage
-            ? `https://drive.google.com/uc?export=view&id=${fileData.id}`
-            : fileData.webViewLink;
+        // Always use direct download URL so <img> and <video> tags can load it.
+        // webViewLink is an HTML page — not embeddable. webContentLink forces
+        // a file-download prompt. uc?export=download works for both images and videos.
+        const viewLink = `https://drive.google.com/uc?export=download&id=${fileData.id}`;
 
         return { viewLink, fileId: fileData.id };
     }
@@ -673,9 +704,27 @@ const storiesManager = (() => {
                     <!-- Content -->
                     <div class="story-content" id="storyContent">
                         ${story.type === 'image'
-                            ? `<img class="story-content-image" src="${escapeAttribute(story.imageURL)}" alt="Status">`
+                            ? `<img class="story-content-image"
+                                    src="${escapeAttribute(story.imageURL)}"
+                                    alt="Status"
+                                    onerror="this.style.display='none';document.getElementById('storyMediaFallback').style.display='flex';">
+                               <div id="storyMediaFallback" class="story-media-fallback" style="display:none;">
+                                   <span>🖼️ Image couldn't load</span>
+                                   <a href="${escapeAttribute(story.imageURL)}" target="_blank" rel="noopener"
+                                      style="color:#60a5fa;margin-top:8px;font-size:13px;">Open in Drive ↗</a>
+                               </div>`
                             : story.type === 'video'
-                                ? `<video class="story-content-video" src="${escapeAttribute(story.imageURL)}" autoplay controls playsinline style="max-width:100%;max-height:70vh;border-radius:8px;"></video>`
+                                ? `<video class="story-content-video"
+                                          src="${escapeAttribute(story.imageURL)}"
+                                          autoplay controls playsinline
+                                          style="max-width:100%;max-height:70vh;border-radius:8px;"
+                                          onerror="this.style.display='none';document.getElementById('storyMediaFallback').style.display='flex'">
+                                   </video>
+                                   <div id="storyMediaFallback" class="story-media-fallback" style="display:none;text-align:center;padding:20px;color:#fff;">
+                                       <span>🎬 Video could not load directly</span>
+                                       <a href="${escapeAttribute(story.imageURL)}" target="_blank" rel="noopener"
+                                          style="display:block;color:#60a5fa;margin-top:8px;font-size:13px;">Open in Drive ↗</a>
+                                   </div>`
                                 : `<div class="story-content-text">${escapeHTML(story.text)}</div>`}
                     </div>
 
